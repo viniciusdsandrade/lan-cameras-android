@@ -25,7 +25,8 @@ interface Decodificador {
 
 /**
  * Vídeo ao vivo de um fluxo RTSP de uma câmera: conecta, depacota e entrega os quadros ao
- * [Decodificador]; se a conexão cair, tenta de novo com espera crescente (até 10 s).
+ * [Decodificador]; se a conexão cair, tenta de novo com espera crescente (até 10 s). Se a câmera
+ * recusar o usuário e a senha, não tenta de novo: avisa por [aoRecusarCredenciais].
  *
  * Cada instância ocupa UMA sessão RTSP na câmera (elas aguentam poucas); [parar] libera a sessão.
  * O decodificador avisa pelo `aoExibir` cada quadro que virou imagem. Os ouvintes são chamados de
@@ -63,6 +64,8 @@ class FluxoDeVideo(
 
     @Volatile var aoMudarEstado: ((Estado) -> Unit)? = null
     @Volatile var aoReceberAudio: ((PacoteRtp) -> Unit)? = null
+    /** A câmera recusou o usuário e a senha da URL. Chega depois do estado de erro, uma vez só. */
+    @Volatile var aoRecusarCredenciais: (() -> Unit)? = null
 
     fun iniciar() {
         val e = synchronized(trava) {
@@ -97,29 +100,39 @@ class FluxoDeVideo(
         }
     }
 
+    private enum class Desfecho { COM_QUADROS, SEM_QUADROS, CREDENCIAIS_RECUSADAS }
+
     private fun laco(e: Execucao) {
         var espera = 1.0
         while (e.ativa) {
             mudar(e, Estado.Conectando)
-            val teveQuadros = executarUmaSessao(e)
+            val desfecho = executarUmaSessao(e)
             if (!e.ativa) break
-            espera = if (teveQuadros) 1.0 else minOf(espera * 2, 10.0)
+            if (desfecho == Desfecho.CREDENCIAIS_RECUSADAS) {
+                // Com a mesma senha a resposta seria a mesma, e insistir pode fazer a câmera bloquear
+                // a conta: o erro fica na tela até quem abriu o fluxo pará-lo (e abrir outro, com a nova).
+                aoRecusarCredenciais?.invoke()
+                while (e.ativa) e.acordar.tryAcquire(60, TimeUnit.SECONDS)
+                break
+            }
+            espera = if (desfecho == Desfecho.COM_QUADROS) 1.0 else minOf(espera * 2, 10.0)
             e.acordar.tryAcquire((espera * 1000).toLong(), TimeUnit.MILLISECONDS)
         }
     }
 
-    /** Roda uma conexão até ela terminar. Devolve se chegou ao menos um quadro. */
-    private fun executarUmaSessao(e: Execucao): Boolean {
+    /** Roda uma conexão até ela terminar e diz como terminou. */
+    private fun executarUmaSessao(e: Execucao): Desfecho {
         val cli = ClienteRtsp.criar(url)
         if (cli == null) {
             mudar(e, Estado.Erro("o endereço da câmera é inválido"))
-            return false
+            return Desfecho.SEM_QUADROS
         }
         cli.limiteSemVideo = limiteSemVideo
         e.cliente = cli
         if (!e.ativa) cli.parar()                               // parar() chegou antes do cliente existir
         quadros.set(0)
         val sessao = Sessao(e)
+        var recusou = false
         try {
             cli.executar(
                 incluirAudio = incluirAudio,
@@ -129,11 +142,13 @@ class FluxoDeVideo(
             )
         } catch (x: Exception) {
             if (e.ativa) mudar(e, Estado.Erro(resumo(x)))
+            recusou = (x as? ErroRtsp)?.credenciaisRecusadas == true
         } finally {
             sessao.encerrar()
             e.cliente = null
         }
-        return quadros.get() > 0
+        if (recusou) return Desfecho.CREDENCIAIS_RECUSADAS
+        return if (quadros.get() > 0) Desfecho.COM_QUADROS else Desfecho.SEM_QUADROS
     }
 
     /** Depacotador, preparador e decodificador de uma conexão. Só a thread do RTSP os usa. */

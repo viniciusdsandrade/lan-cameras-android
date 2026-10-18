@@ -4,8 +4,11 @@ import com.lancameras.nucleo.apoio.Amostras
 import com.lancameras.nucleo.apoio.Empacotador
 import com.lancameras.nucleo.apoio.ServidorRtspFalso
 import com.lancameras.nucleo.apoio.esperar
+import com.lancameras.nucleo.rtsp.ClienteRtsp
+import com.lancameras.nucleo.rtsp.ErroRtsp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -191,6 +194,42 @@ class FluxoDeVideoTest {
                 assertEquals(2, servidor.conexoes)
             } finally {
                 f.parar()
+            }
+        }
+    }
+
+    // Senha recusada
+
+    @Test
+    fun cameraQueRecusaASenhaAvisaUmaVezENaoInsiste() {
+        ServidorRtspFalso(sdp(false), emptyList(), statusDoDescribe = 401).iniciar().use { servidor ->
+            val f = fluxo(servidor.url)
+            val recusas = AtomicInteger()
+            f.aoRecusarCredenciais = { recusas.incrementAndGet() }
+            f.iniciar()
+            try {
+                assertTrue("deveria avisar que a câmera recusou a senha", esperar(5.0) { recusas.get() == 1 })
+                val e = f.estado as? FluxoDeVideo.Estado.Erro ?: return fail("estado inesperado: ${f.estado}")
+                assertTrue(e.mensagem, e.mensagem.contains("recusou o usuário ou a senha (401)"))
+                Thread.sleep(3000)                                  // sem a recusa, tentaria de novo em 2 s
+                assertEquals("com a mesma senha não deveria tentar de novo", 1, servidor.conexoes)
+                assertEquals(1, recusas.get())
+            } finally {
+                f.parar()
+            }
+            assertEquals("parar() solta o fluxo parado no erro", FluxoDeVideo.Estado.Parado, f.estado)
+        }
+    }
+
+    @Test
+    fun so401E403ContamComoSenhaRecusada() {
+        for ((status, recusada) in listOf(401 to true, 403 to true, 404 to false, 503 to false)) {
+            ServidorRtspFalso(sdp(false), emptyList(), statusDoDescribe = status).iniciar().use { servidor ->
+                val cliente = ClienteRtsp.criar(servidor.url) ?: return fail("URL do servidor falso inválida")
+                val erro = assertThrows(ErroRtsp::class.java) {
+                    cliente.executar(incluirAudio = false, aoFicarPronto = {}, aoReceberVideo = {})
+                }
+                assertEquals("$status: $erro", recusada, erro.credenciaisRecusadas)
             }
         }
     }

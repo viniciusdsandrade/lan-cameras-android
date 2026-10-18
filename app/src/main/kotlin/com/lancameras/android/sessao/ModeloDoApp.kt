@@ -33,6 +33,10 @@ class ModeloDoApp(
     val escopo: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
     /** No Android o app nasce pausado e o ciclo de vida o retoma quando a tela aparece. */
     comecarPausado: Boolean = false,
+    /** Como pegar de novo os dados de uma câmera que recusou a senha (os testes trocam). Bloqueia. */
+    private val reidentificar: (CameraConfig) -> CameraConfig = { c ->
+        Cadastro.reidentificar(c) { Cadastro.procurarNaRede(4.0) { plataforma.seguraMulticast() } }
+    },
 ) {
     sealed interface Selecao {
         data object Geral : Selecao
@@ -62,6 +66,8 @@ class ModeloDoApp(
     private var pausaAgendada: Job? = null
     /** Zoom com que a próxima tela de câmera abre (testes). */
     var zoomInicial: Double? = null
+    /** Câmeras cujas credenciais estão sendo pegas de novo (uma vez por câmera de cada vez). */
+    private val renovando = mutableSetOf<String>()
 
     init {
         recarregarCameras()
@@ -110,7 +116,10 @@ class ModeloDoApp(
                 _sessaoDaCamera.value = null
                 val atuais = _sessoesGerais.value.toMutableMap()
                 for (c in _cameras.value) if (c.id !in atuais) {
-                    atuais[c.id] = SessaoDeVideo(c, StreamDeVideo.SECUNDARIO).also { it.iniciar() }
+                    atuais[c.id] = SessaoDeVideo(c, StreamDeVideo.SECUNDARIO).also {
+                        it.aoRecusarCredenciais = { escopo.launch { renovarCredenciais(c) } }
+                        it.iniciar()
+                    }
                 }
                 _sessoesGerais.value = atuais
             }
@@ -263,6 +272,57 @@ class ModeloDoApp(
             if (erros.isEmpty()) avisar("Todas as câmeras paradas", Aviso.Tipo.OK)
             else avisar(erros.joinToString("; ") { Redact.texto(it) }, Aviso.Tipo.ERRO)
         }
+    }
+
+    // Senha ou endereço trocados
+
+    /**
+     * A câmera recusou o usuário e a senha guardados: o app do fabricante pode trocar a senha, e o
+     * roteador, o endereço. Pega os atuais com a própria câmera, guarda e reabre só as sessões dela.
+     * Se ela devolver o mesmo que já estava guardado, não reabre nada: insistir com uma senha recusada
+     * pode fazer a câmera bloquear a conta.
+     */
+    fun renovarCredenciais(camera: CameraConfig) {
+        if (!renovando.add(camera.id)) return
+        avisar("${camera.nome} não aceitou a senha guardada: pegando a atual com a própria câmera…")
+        escopo.launch {
+            val r = runCatching { withContext(Dispatchers.IO) { reidentificar(camera) } }
+            renovando.remove(camera.id)
+            val nova = r.getOrElse {
+                avisar("${camera.nome} não aceitou a senha guardada e não consegui pegar a atual: ${Redact.texto(it.toString())}", Aviso.Tipo.ERRO)
+                return@launch
+            }
+            if (nova.host == camera.host && nova.usuario == camera.usuario && nova.hash == camera.hash) {
+                avisar("${camera.nome} recusou a senha que ela mesma informa. Tente de novo daqui a alguns minutos.", Aviso.Tipo.ERRO)
+                return@launch
+            }
+            try {
+                armazenamento.atualizar(camera.id) { it.copy(host = nova.host, usuario = nova.usuario, hash = nova.hash) }
+            } catch (e: Exception) {
+                avisar("Não consegui guardar os dados novos de ${camera.nome}: ${Redact.texto(e.message ?: e.toString())}", Aviso.Tipo.ERRO)
+                return@launch
+            }
+            recarregarCameras()
+            reabrirSessoes(camera.id)
+            avisar(
+                if (nova.host == camera.host) "${camera.nome} tinha trocado de senha: já peguei a nova."
+                else "${camera.nome} tinha mudado de endereço na rede: já atualizei.",
+                Aviso.Tipo.OK,
+            )
+        }
+    }
+
+    /** Fecha e reabre só as sessões de uma câmera (os dados dela mudaram); as outras seguem como estão. */
+    private fun reabrirSessoes(id: String) {
+        _sessoesGerais.value[id]?.let { velha ->
+            velha.parar()
+            _sessoesGerais.value = _sessoesGerais.value - id
+        }
+        if (_sessaoDaCamera.value?.camera?.id == id) {
+            _sessaoDaCamera.value?.encerrar()
+            _sessaoDaCamera.value = null
+        }
+        ajustarSessoes()
     }
 
     // Avisos

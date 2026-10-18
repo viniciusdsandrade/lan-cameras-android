@@ -4,7 +4,11 @@ import com.lancameras.nucleo.Redact
 import com.lancameras.nucleo.rede.SoqueteTcp
 
 /** Falha do RTSP; a mensagem passa por [Redact]: a URL das câmeras carrega usuário e senha. */
-class ErroRtsp(descricao: String) : Exception(Redact.texto(descricao)) {
+class ErroRtsp(
+    descricao: String,
+    /** A câmera recusou o usuário e a senha da URL (401/403): com eles, tentar de novo não adianta. */
+    val credenciaisRecusadas: Boolean = false,
+) : Exception(Redact.texto(descricao)) {
     override fun toString(): String = message ?: "erro RTSP"
 }
 
@@ -146,7 +150,7 @@ class ClienteRtsp private constructor(private val url: String, private val host:
     }
 
     private fun erroDeStatus(metodo: String, status: Int): ErroRtsp = when (status) {
-        401, 403 -> ErroRtsp("$metodo: a câmera recusou o usuário ou a senha ($status)")
+        401, 403 -> ErroRtsp("$metodo: a câmera recusou o usuário ou a senha ($status)", credenciaisRecusadas = true)
         404 -> ErroRtsp("$metodo: a câmera não achou o fluxo pedido (404)")
         453, 503 -> ErroRtsp("$metodo: a câmera está sem sessões livres ($status)")
         else -> ErroRtsp("$metodo: resposta inesperada da câmera ($status)")

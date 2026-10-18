@@ -27,6 +27,7 @@ fun Ajuda(fechar: () -> Unit) {
             item { Bloco("Rastreio automático", "Com o rastreio ligado, a câmera segue o movimento e depois volta sozinha ao ponto de vigia. Por isso um movimento manual \"se desfaz\": desligue o rastreio se quiser que ela fique onde você deixou.") }
             item { Bloco("Posições salvas", "\"Salvar a posição atual\" guarda para onde a câmera aponta. O app só apaga as posições que ele mesmo criou; as que já vinham na câmera (com cadeado) ficam intactas.") }
             item { Bloco("Som", "\"Ouvir\" liga o som da câmera. \"Segure para falar\" usa o microfone do celular enquanto o dedo estiver no botão, e a câmera repete no alto-falante dela; enquanto você fala o som da câmera fica mudo para não dar eco. Há também sons prontos e texto falado. O volume começa em 30%: o alto-falante é alto.") }
+            item { Bloco("Senha das câmeras", "Você não digita senha: o app pega o usuário e a senha com a própria câmera. Se o app do fabricante (iCSee, XMEye) trocar a senha dela, ou o roteador mudar o endereço, o app percebe e pega os novos sozinho. Se mesmo assim a imagem não voltar, abra Câmeras (o ícone de ajustes no alto) e toque em Procurar câmeras na rede.") }
             item { Titulo("Permissões") }
             item { Bloco("Rede local", "Necessária para achar as câmeras e falar com elas. No Android 17 ela aparece como \"dispositivos próximos\" nas permissões do app.") }
             item { Bloco("Microfone", "Só quando você segura \"Falar\".") }

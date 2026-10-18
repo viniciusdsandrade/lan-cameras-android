@@ -76,6 +76,7 @@ class SessaoDaCamera(val camera: CameraConfig, private val modelo: ModeloDoApp) 
     init {
         val escuta = this.escuta
         video.definirOuvinteDeAudio { escuta.empurrar(it) }
+        video.aoRecusarCredenciais = { modelo.escopo.launch { modelo.renovarCredenciais(camera) } }
         video.iniciar()
         escopo.launch { cicloDeEstado() }
         escopo.launch { plataforma.preferencias.volume.collect { ganho = ganho(it) } }

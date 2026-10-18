@@ -1,7 +1,9 @@
 package com.lancameras.android.sessao
 
+import com.lancameras.android.apoio.Aviso
 import com.lancameras.android.apoio.Direcao
 import com.lancameras.nucleo.modelo.ArmazenamentoDeCameras
+import com.lancameras.nucleo.modelo.Cadastro
 import com.lancameras.nucleo.modelo.CameraConfig
 import com.lancameras.nucleo.modelo.StreamDeVideo
 import kotlinx.coroutines.Dispatchers
@@ -16,13 +18,16 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.io.File
 import java.net.InetAddress
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * O modelo do app: quantas sessões ficam abertas nas câmeras em cada tela e o que acontece ao pausar
@@ -52,8 +57,26 @@ class ModeloDoAppTest {
         pasta.deleteRecursively()
     }
 
-    private fun modelo(argumentos: List<String> = emptyList(), plataforma: PlataformaFalsa = PlataformaFalsa(), comecarPausado: Boolean = false) =
-        ModeloDoApp(armazenamento, plataforma, argumentos, TestScope(dispatcher), comecarPausado).also { modelos += it }
+    /**
+     * [reidentificar]: o que a câmera responde quando o app pede de novo os dados dela (por padrão,
+     * que sumiu: os testes nunca saem procurando na rede de verdade).
+     */
+    private fun modelo(
+        argumentos: List<String> = emptyList(),
+        plataforma: PlataformaFalsa = PlataformaFalsa(),
+        comecarPausado: Boolean = false,
+        reidentificar: (CameraConfig) -> CameraConfig = { throw Cadastro.Falha.CameraSumiu() },
+    ) = ModeloDoApp(armazenamento, plataforma, argumentos, TestScope(dispatcher), comecarPausado, reidentificar).also { modelos += it }
+
+    /** Espera o que o modelo faz fora da thread do teste (a rede vai para `Dispatchers.IO`). */
+    private fun esperar(segundos: Double = 3.0, condicao: () -> Boolean): Boolean {
+        val limite = System.nanoTime() + (segundos * 1e9).toLong()
+        while (System.nanoTime() < limite) {
+            if (condicao()) return true
+            Thread.sleep(20)
+        }
+        return condicao()
+    }
 
     @Test
     fun visaoGeralAbreUmaSessaoLevePorCameraEATelaDaCameraSoUma() {
@@ -171,6 +194,80 @@ class ModeloDoAppTest {
         m.procurarCameras()
         assertTrue(m.aviso.value?.texto?.contains("rede local") == true)
         assertFalse(m.procurando.value)
+    }
+
+    // Senha ou endereço trocados
+
+    @Test
+    fun cameraQueRecusaASenhaGanhaASenhaNovaESoElaReabre() {
+        val m = modelo(reidentificar = { it.copy(hash = "senha-nova") })
+        val antes = m.sessoesGerais.value
+        val terceira = antes.getValue("SERIE-FALSA-3")
+        terceira.aoRecusarCredenciais!!.invoke()                  // o que o fluxo faz quando a câmera responde 401
+        assertTrue(esperar { m.aviso.value?.tipo == Aviso.Tipo.OK })
+        assertEquals("Câmera 3 tinha trocado de senha: já peguei a nova.", m.aviso.value?.texto)
+        assertEquals("a senha nova fica guardada", listOf("x", "x", "senha-nova"), armazenamento.carregar().map { it.hash })
+        assertEquals("nome e ordem não mudam", listOf("Câmera 1", "Câmera 2", "Câmera 3"), m.cameras.value.map { it.nome })
+        val reaberta = m.sessoesGerais.value.getValue("SERIE-FALSA-3")
+        assertNotSame("a sessão da câmera é reaberta com a senha nova", terceira, reaberta)
+        assertEquals("senha-nova", reaberta.camera.hash)
+        assertSame("as outras câmeras seguem como estavam", antes["SERIE-FALSA-1"], m.sessoesGerais.value["SERIE-FALSA-1"])
+        assertSame(antes["SERIE-FALSA-2"], m.sessoesGerais.value["SERIE-FALSA-2"])
+    }
+
+    @Test
+    fun naTelaDaCameraASessaoTambemReabreNoEnderecoNovo() {
+        val m = modelo(reidentificar = { it.copy(host = "192.0.2.30", hash = "senha-nova") })
+        m.selecionar(ModeloDoApp.Selecao.Camera("SERIE-FALSA-2"))
+        val antiga = m.sessaoDaCamera.value!!
+        antiga.video.aoRecusarCredenciais!!.invoke()
+        assertTrue(esperar { m.aviso.value?.tipo == Aviso.Tipo.OK })
+        assertEquals("Câmera 2 tinha mudado de endereço na rede: já atualizei.", m.aviso.value?.texto)
+        val nova = m.sessaoDaCamera.value
+        assertNotNull(nova)
+        assertNotSame(antiga, nova)
+        assertEquals("192.0.2.30", nova!!.camera.host)
+        assertEquals("192.0.2.30", m.camera("SERIE-FALSA-2")?.host)
+        assertEquals("continua na mesma tela", ModeloDoApp.Selecao.Camera("SERIE-FALSA-2"), m.selecao.value)
+    }
+
+    @Test
+    fun senhaQueACameraRepeteNaoReabreNada() {
+        val m = modelo(reidentificar = { it })                    // a câmera devolve o que já estava guardado
+        val antiga = m.sessoesGerais.value.getValue("SERIE-FALSA-1")
+        antiga.aoRecusarCredenciais!!.invoke()
+        assertTrue(esperar { m.aviso.value?.tipo == Aviso.Tipo.ERRO })
+        assertEquals("Câmera 1 recusou a senha que ela mesma informa. Tente de novo daqui a alguns minutos.", m.aviso.value?.texto)
+        assertSame("insistir com a senha recusada pode bloquear a conta", antiga, m.sessoesGerais.value["SERIE-FALSA-1"])
+    }
+
+    @Test
+    fun falhaAoPegarASenhaAvisaSemMexerNoQueEstaGuardado() {
+        val m = modelo()
+        val antiga = m.sessoesGerais.value.getValue("SERIE-FALSA-1")
+        antiga.aoRecusarCredenciais!!.invoke()
+        assertTrue(esperar { m.aviso.value?.tipo == Aviso.Tipo.ERRO })
+        assertEquals(
+            "Câmera 1 não aceitou a senha guardada e não consegui pegar a atual: ela não está mais no endereço guardado e não apareceu na rede",
+            m.aviso.value?.texto,
+        )
+        assertEquals(listOf("x", "x", "x"), armazenamento.carregar().map { it.hash })
+        assertSame(antiga, m.sessoesGerais.value["SERIE-FALSA-1"])
+    }
+
+    @Test
+    fun cadaCameraTemUmaRenovacaoDeCadaVez() {
+        val chamadas = AtomicInteger()
+        val m = modelo(reidentificar = { c ->
+            chamadas.incrementAndGet()
+            Thread.sleep(300)
+            c.copy(hash = "senha-nova")
+        })
+        val s = m.sessoesGerais.value.getValue("SERIE-FALSA-1")
+        s.aoRecusarCredenciais!!.invoke()
+        s.aoRecusarCredenciais!!.invoke()                         // a câmera pode recusar de novo antes de a primeira acabar
+        assertTrue(esperar { m.aviso.value?.tipo == Aviso.Tipo.OK })
+        assertEquals(1, chamadas.get())
     }
 
     @Test

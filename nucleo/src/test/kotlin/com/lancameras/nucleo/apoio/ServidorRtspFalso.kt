@@ -21,6 +21,8 @@ class ServidorRtspFalso(
     private val cortarPrimeiraConexaoApos: Int? = null,
     /** Na PRIMEIRA conexão, para de mandar vídeo (sem fechar) depois de tantos pacotes (a câmera travou). */
     private val calarPrimeiraConexaoApos: Int? = null,
+    /** Status da resposta ao DESCRIBE: 401 é a câmera recusando o usuário e a senha da URL. */
+    private val statusDoDescribe: Int = 200,
 ) : AutoCloseable {
     private val escuta = ServerSocket(0, 4, InetAddress.getLoopbackAddress())
     val porta: Int = escuta.localPort
@@ -71,7 +73,8 @@ class ServidorRtspFalso(
             }
             when (metodo) {
                 "OPTIONS" -> enviar(saida, resposta(cseq, listOf("Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN")))
-                "DESCRIBE" -> enviar(saida, resposta(cseq, listOf(
+                "DESCRIBE" -> if (statusDoDescribe != 200) enviar(saida, resposta(cseq, emptyList(), status = "$statusDoDescribe Recusado"))
+                else enviar(saida, resposta(cseq, listOf(
                     "Content-Type: application/sdp",
                     "Content-Base: $url/",
                     "Content-Length: ${sdp.toByteArray().size}",
@@ -96,8 +99,8 @@ class ServidorRtspFalso(
         }
     }
 
-    private fun resposta(cseq: String, cabecalhos: List<String>, corpo: String = ""): ByteArray {
-        val t = StringBuilder("RTSP/1.0 200 OK\r\nCseq: $cseq\r\nServer: falso\r\n")
+    private fun resposta(cseq: String, cabecalhos: List<String>, corpo: String = "", status: String = "200 OK"): ByteArray {
+        val t = StringBuilder("RTSP/1.0 $status\r\nCseq: $cseq\r\nServer: falso\r\n")
         for (h in cabecalhos) t.append(h).append("\r\n")
         t.append("\r\n").append(corpo)
         return t.toString().toByteArray()

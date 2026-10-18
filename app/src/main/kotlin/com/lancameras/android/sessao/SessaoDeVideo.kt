@@ -22,6 +22,12 @@ class SessaoDeVideo(val camera: CameraConfig, val stream: StreamDeVideo, comAudi
     /** Quem tira a foto: a tela que mostra o quadro inteiro registra aqui como capturá-lo em JPEG. */
     @Volatile var capturador: (suspend (LenteExibida) -> ByteArray?)? = null
 
+    /**
+     * A câmera recusou o usuário e a senha guardados e o fluxo parou de tentar: quem abriu a sessão
+     * decide o que fazer (o modelo pega a senha atual com a própria câmera). Chamado de uma thread interna.
+     */
+    @Volatile var aoRecusarCredenciais: (() -> Unit)? = null
+
     private val fluxo = FluxoDeVideo(camera.urlDeVideo(stream), comAudio) { _, aoExibir -> distribuidor.novaSessao(aoExibir) }
 
     init {
@@ -30,6 +36,7 @@ class SessaoDeVideo(val camera: CameraConfig, val stream: StreamDeVideo, comAudi
             Depuracao.registrar { "$rotulo: $novo" }
             _estado.value = novo
         }
+        fluxo.aoRecusarCredenciais = { aoRecusarCredenciais?.invoke() }
     }
 
     fun iniciar() = fluxo.iniciar()
