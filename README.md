@@ -33,7 +33,10 @@ sessões (as câmeras aguentam poucas ao mesmo tempo) e as reabre ao voltar.
   servidores falsos e conferido nas câmeras reais pela ferramenta de linha de comando.
 - **App (`app/`)**: completo. Verificado num emulador com Android 17 ligado às câmeras reais
   (permissão de rede local, descoberta, vídeo das três câmeras, zoom, tela cheia, segundo plano
-  e foto). Ainda não foi instalado num celular de verdade.
+  e foto). Instalado também num celular de verdade, com Android 16, cujo decodificador de hardware
+  vai só até 2560x1440: lá o vídeo HD das câmeras de duas lentes (2304x2592) passa pelo
+  decodificador por software do Android (uns dois núcleos do processador na tela da câmera), e a
+  visão geral, no fluxo leve, continua no hardware.
 
 ## Como funciona
 

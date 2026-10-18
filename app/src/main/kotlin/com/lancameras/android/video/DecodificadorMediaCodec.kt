@@ -14,12 +14,15 @@ import com.lancameras.nucleo.video.ParametrosDeVideo
 import com.lancameras.nucleo.video.QuadroDeVideo
 import com.lancameras.nucleo.video.TamanhoDoVideo
 import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Decodifica H.264 e H.265 com o hardware do aparelho (MediaCodec) direto numa [Surface].
+ * Decodifica H.264 e H.265 com o hardware do aparelho (MediaCodec) direto numa [Surface]. Se o
+ * hardware não aceitar o tamanho do vídeo (há chips que param em 2560x1440, e o HD das câmeras de
+ * duas lentes tem 2304x2592), usa o decodificador por software do Android.
  *
  * Recebe os quadros já em Annex B, com os parâmetros (VPS/SPS/PPS) à parte; se eles mudarem, o
  * decodificador é refeito. Depois de qualquer tropeço (buffer cheio, erro do codec) só volta num
@@ -57,37 +60,54 @@ class DecodificadorMediaCodec(private val superficie: Surface, private val aoFal
     private fun mesmos(a: ParametrosDeVideo, b: ParametrosDeVideo): Boolean =
         a.codec == b.codec && a.csd.size == b.csd.size && a.csd.indices.all { a.csd[it].contentEquals(b.csd[it]) }
 
-    /** Só com a trava. */
+    /** Só com a trava. Tenta os decodificadores na [ordemDeTentativa] até um deles configurar. */
     private fun criar(p: ParametrosDeVideo) {
         val t = p.tamanho ?: TamanhoDoVideo(1920, 1080)
-        val formato = MediaFormat.createVideoFormat(p.codec.mime, t.largura, t.altura)
-        for ((i, b) in p.csd.withIndex()) formato.setByteBuffer("csd-$i", ByteBuffer.wrap(b))
-        formato.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, maxOf(1 shl 20, t.largura * t.altura / 2))
-        var c: MediaCodec? = null
-        try {
-            val nome = MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(formato)
-            c = if (nome != null) MediaCodec.createByCodecName(nome) else MediaCodec.createDecoderByType(p.codec.mime)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-                c.codecInfo.getCapabilitiesForType(p.codec.mime).isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
-            ) {
-                formato.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+        val video = "${p.codec.mime} ${t.largura}x${t.altura}"
+        var motivo = "nenhum decodificador deste aparelho aceita ${t.largura}x${t.altura}"
+        for (nome in ordemDeTentativa(opcoes(p.codec.mime, t), recusas[video]?.toSet().orEmpty())) {
+            val formato = MediaFormat.createVideoFormat(p.codec.mime, t.largura, t.altura)
+            for ((i, b) in p.csd.withIndex()) formato.setByteBuffer("csd-$i", ByteBuffer.wrap(b))
+            formato.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, maxOf(1 shl 20, t.largura * t.altura / 2))
+            var c: MediaCodec? = null
+            try {
+                c = MediaCodec.createByCodecName(nome)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                    c.codecInfo.getCapabilitiesForType(p.codec.mime).isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
+                ) {
+                    formato.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                }
+                entradasLivres = LinkedBlockingDeque()
+                c.setCallback(Retorno(c), handler)
+                c.configure(formato, superficie, null, 0)
+                c.start()
+                codec = c
+                falhou = false
+                aguardandoChave = true
+                Depuracao.registrar { "decodificador ${c.name} para ${p.codec.nome} ${t.largura}x${t.altura}" }
+                return
+            } catch (e: Exception) {
+                c?.release()
+                recusas.getOrPut(video) { ConcurrentHashMap.newKeySet() }.add(nome)
+                motivo = "$nome: ${e.message ?: e.javaClass.simpleName}"
+                Depuracao.registrar { "decodificador $nome recusou ${p.codec.nome} ${t.largura}x${t.altura}" }
             }
-            entradasLivres = LinkedBlockingDeque()
-            c.setCallback(Retorno(c), handler)
-            c.configure(formato, superficie, null, 0)
-            c.start()
-            codec = c
-            falhou = false
-            aguardandoChave = true
-            Depuracao.registrar { "decodificador ${c.name} para ${p.codec.nome} ${t.largura}x${t.altura}" }
-        } catch (e: Exception) {
-            c?.release()
-            codec = null
-            falhou = true
-            tentativas++
-            aoFalhar("decodificador de ${p.codec.nome}: ${e.message ?: e.javaClass.simpleName}")
         }
+        codec = null
+        falhou = true
+        tentativas++
+        aoFalhar("decodificador de ${p.codec.nome}: $motivo")
     }
+
+    /** Os decodificadores do aparelho para este tipo de vídeo, e se cada um diz aceitar o tamanho. */
+    private fun opcoes(mime: String, t: TamanhoDoVideo): List<OpcaoDeDecodificador> =
+        MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+            .filter { info -> !info.isEncoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) } }
+            .map { info ->
+                val aceita = runCatching { info.getCapabilitiesForType(mime).videoCapabilities?.isSizeSupported(t.largura, t.altura) == true }
+                    .getOrDefault(false)
+                OpcaoDeDecodificador(info.name, info.isHardwareAccelerated, aceita)
+            }
 
     override fun decodificar(quadro: QuadroDeVideo): Boolean {
         if (falhou) {
@@ -174,5 +194,7 @@ class DecodificadorMediaCodec(private val superficie: Surface, private val aoFal
 
     private companion object {
         val numero = AtomicInteger()
+        /** Quem já recusou cada vídeo neste aparelho ("video/avc 2304x2592" → nomes): da próxima vez, fica para o fim. */
+        val recusas = ConcurrentHashMap<String, MutableSet<String>>()
     }
 }
