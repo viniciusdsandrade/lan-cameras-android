@@ -7,12 +7,28 @@ do fabricante.
 > É a versão para Android dos apps para Mac (`lan-cameras-mac`) e para iPhone
 > (`lan-cameras-ios`), com os mesmos protocolos reescritos em Kotlin.
 
+## O que faz
+
+- Vídeo ao vivo das câmeras (H.264 e H.265, decodificados pelo hardware do celular) pelo RTSP.
+- Câmeras com duas lentes empilhadas no mesmo quadro: mostra a lente móvel e, se quiser, a fixa.
+- Movimento (PTZ) segurando as setas, zoom digital (pinça, toque duplo), posições salvas.
+- Luz branca (automática, ligada, desligada) e rastreio automático.
+- Ouvir a câmera, falar por ela ao vivo (segure o botão), tocar sons prontos e texto falado.
+- Foto da lente atual, direto na galeria.
+- Em retrato, o vídeo fica no topo e os controles rolam embaixo; em paisagem, o vídeo ocupa a
+  tela inteira com os controles principais por cima.
+
+O app só fica conectado às câmeras enquanto está na tela: em segundo plano ele solta as
+sessões (as câmeras aguentam poucas ao mesmo tempo) e as reabre ao voltar.
+
 ## Estado
 
-- **Núcleo (`nucleo/`)**: pronto e testado nas câmeras. Inclui RTSP/RTP, os depacotadores
-  H.264 e H.265, ONVIF (identificação, credenciais, movimento e posições salvas), DVRIP (luz,
-  rastreio e fala), WS-Discovery e varredura da rede, A-law, sons e o armazenamento.
-- **App (`app/`)**: em construção. Faltam o vídeo pelo `MediaCodec`, as telas, os controles e o som.
+- **Núcleo (`nucleo/`)**: RTSP/RTP, depacotadores H.264 e H.265, ONVIF, DVRIP, WS-Discovery e
+  varredura da rede, A-law, sons, fala com ritmo e armazenamento. Testado na JVM contra
+  servidores falsos e conferido nas câmeras reais pela ferramenta de linha de comando.
+- **App (`app/`)**: completo. Verificado num emulador com Android 17 ligado às câmeras reais
+  (permissão de rede local, descoberta, vídeo das três câmeras, zoom, tela cheia, segundo plano
+  e foto). Ainda não foi instalado num celular de verdade.
 
 ## Como funciona
 
@@ -69,6 +85,18 @@ move, não muda a luz nem o rastreio e não toca som.
 
 As câmeras ficam em `~/.config/lan-cameras/camspike/` (ou em `CAMERAS_PASTA`). Usuário e
 senha nunca são impressos.
+
+### Acompanhar o app
+
+O app registra o que faz com as câmeras (conexões, pausas em segundo plano), sem credenciais,
+só quando a etiqueta de log está ligada:
+
+```sh
+adb shell setprop log.tag.Cameras DEBUG
+adb logcat -s Cameras:D
+```
+
+Para abrir direto numa câmera (útil em testes): `adb shell am start -n com.lancameras.android/.MainActivity --es abrir Garagem`.
 
 ## Privacidade
 

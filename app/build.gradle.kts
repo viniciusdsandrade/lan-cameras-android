@@ -48,6 +48,7 @@ android {
     kotlin {
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_17)
+            freeCompilerArgs.add("-opt-in=androidx.compose.material3.ExperimentalMaterial3Api")
         }
     }
 
@@ -58,6 +59,12 @@ android {
     lint {
         abortOnError = true
         checkReleaseBuilds = false
+        lintConfig = file("lint.xml")
+    }
+
+    testOptions {
+        // os testes de unidade rodam na JVM; o pouco de Android que encontrarem devolve valores padrão
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -78,6 +85,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
 
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
