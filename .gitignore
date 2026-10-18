@@ -1,0 +1,34 @@
+.DS_Store
+*.iml
+.gradle/
+.kotlin/
+.idea/
+build/
+/captures
+.externalNativeBuild
+.cxx
+*.apk
+*.aab
+
+# Caminho do SDK desta máquina (leva o nome do usuário): cada um gera o seu
+local.properties
+
+# Defesa em profundidade: assinatura, credenciais e dados da instalação nunca entram
+*.jks
+*.keystore
+*.p12
+*.env
+google-services.json
+creds*
+cameras.json
+*.jpg
+*.jpeg
+*.heic
+*.h264
+*.h265
+*.hevc
+*.sdp
+*.pcap
+*.mp4
+*.mov
+*.log

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fundo escuro desde a abertura, como no iPhone: vídeo em fundo de visor -->
+    <style name="Tema.Cameras" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/fundo</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
