@@ -1,6 +1,7 @@
 package com.lancameras.nucleo.video
 
 import com.lancameras.nucleo.apoio.Amostras
+import com.lancameras.nucleo.apoio.AparelhoQueNaoEhACamera
 import com.lancameras.nucleo.apoio.Empacotador
 import com.lancameras.nucleo.apoio.ServidorRtspFalso
 import com.lancameras.nucleo.apoio.esperar
@@ -44,8 +45,10 @@ class FluxoDeVideoTest {
 
     private val decodificadores = Collections.synchronizedList(mutableListOf<DecodificadorFalso>())
 
-    private fun fluxo(url: String, incluirAudio: Boolean = false, limiteSemVideo: Double = 8.0) =
-        FluxoDeVideo(url, incluirAudio, limiteSemVideo) { _, aoExibir -> DecodificadorFalso(aoExibir).also { decodificadores += it } }
+    private fun fluxo(url: String, incluirAudio: Boolean = false, limiteSemVideo: Double = 8.0, falhasAteAvisar: Int = 3, falhasEntreAvisos: Int = 30) =
+        FluxoDeVideo(url, incluirAudio, limiteSemVideo, falhasAteAvisar, falhasEntreAvisos) { _, aoExibir ->
+            DecodificadorFalso(aoExibir).also { decodificadores += it }
+        }
 
     private fun sdp(h265: Boolean): String {
         val nals = Amostras.nals(h265)
@@ -141,9 +144,12 @@ class FluxoDeVideoTest {
         val pacotes = Empacotador.h264(Amostras.quadros(false))
         // a primeira conexão morre no meio do vídeo (depois do primeiro quadro-chave); a segunda é completa
         ServidorRtspFalso(sdp(false), pacotes, cortarPrimeiraConexaoApos = pacotes.size / 3).iniciar().use { servidor ->
-            val f = fluxo(servidor.url)
+            // avisaria já na primeira conexão sem imagem: a que cai depois de mostrar imagem não conta
+            val f = fluxo(servidor.url, falhasAteAvisar = 1)
             val estados = Collections.synchronizedList(mutableListOf<FluxoDeVideo.Estado>())
+            val naoRespondeu = AtomicInteger()
             f.aoMudarEstado = { estados += it }
+            f.aoNaoResponder = { naoRespondeu.incrementAndGet() }
             f.iniciar()
             try {
                 assertTrue(
@@ -156,6 +162,7 @@ class FluxoDeVideoTest {
                 val depois = nomes.drop(primeiroErro)
                 assertTrue("depois do erro deveria tentar de novo: $nomes", depois.contains("Conectando"))
                 assertTrue("e voltar a mostrar imagem: $nomes", depois.contains("AoVivo"))
+                assertEquals("a conexão caiu depois de mostrar imagem: a câmera está no endereço", 0, naoRespondeu.get())
             } finally {
                 f.parar()
             }
@@ -198,14 +205,55 @@ class FluxoDeVideoTest {
         }
     }
 
+    // Câmera que não responde no endereço guardado
+
+    @Test
+    fun outroAparelhoNoEnderecoDaCameraAvisaQueElaNaoResponde() {
+        // o roteador deu o endereço da câmera a um aparelho que responde 405 ao OPTIONS e fecha a
+        // conexão: sem o aviso, a tela ficava em "sem imagem: conexão fechada" para sempre
+        AparelhoQueNaoEhACamera().use { aparelho ->
+            val f = fluxo(aparelho.url, falhasAteAvisar = 2)
+            val avisos = Collections.synchronizedList(mutableListOf<Boolean>())
+            f.aoNaoResponder = { avisos += it }
+            f.iniciar()
+            try {
+                assertTrue("deveria avisar que a câmera não responde", esperar(6.0) { avisos.isNotEmpty() })
+                assertEquals(listOf(true), avisos.toList())
+                assertEquals("avisa depois de duas conexões seguidas sem imagem", 2, aparelho.conexoes)
+                assertEquals(FluxoDeVideo.Estado.Erro("conexão fechada"), f.estado)
+            } finally {
+                f.parar()
+            }
+        }
+    }
+
+    @Test
+    fun enderecoQueRecusaAConexaoAvisaDeNovoEnquantoACameraNaoVolta() {
+        val loopback = InetAddress.getLoopbackAddress().hostAddress
+        val f = fluxo("rtsp://$loopback:1/fluxo", falhasAteAvisar = 1, falhasEntreAvisos = 1)   // porta 1: recusa
+        val avisos = Collections.synchronizedList(mutableListOf<Boolean>())
+        f.aoNaoResponder = { avisos += it }
+        f.iniciar()
+        try {
+            assertTrue("avisos: $avisos", esperar(5.0) { avisos.size >= 2 })
+            assertEquals("só o primeiro aviso é a primeira vez", listOf(true, false), avisos.take(2))
+            val e = f.estado as? FluxoDeVideo.Estado.Erro ?: return fail("estado inesperado: ${f.estado}")
+            assertTrue(e.mensagem, e.mensagem.startsWith("não consegui conectar"))
+        } finally {
+            f.parar()
+        }
+    }
+
     // Senha recusada
 
     @Test
     fun cameraQueRecusaASenhaAvisaUmaVezENaoInsiste() {
         ServidorRtspFalso(sdp(false), emptyList(), statusDoDescribe = 401).iniciar().use { servidor ->
-            val f = fluxo(servidor.url)
+            val f = fluxo(servidor.url, falhasAteAvisar = 1)
             val recusas = AtomicInteger()
+            val naoRespondeu = AtomicInteger()
             f.aoRecusarCredenciais = { recusas.incrementAndGet() }
+            f.aoNaoResponder = { naoRespondeu.incrementAndGet() }
             f.iniciar()
             try {
                 assertTrue("deveria avisar que a câmera recusou a senha", esperar(5.0) { recusas.get() == 1 })
@@ -214,6 +262,7 @@ class FluxoDeVideoTest {
                 Thread.sleep(3000)                                  // sem a recusa, tentaria de novo em 2 s
                 assertEquals("com a mesma senha não deveria tentar de novo", 1, servidor.conexoes)
                 assertEquals(1, recusas.get())
+                assertEquals("ela respondeu: só recusou a senha", 0, naoRespondeu.get())
             } finally {
                 f.parar()
             }

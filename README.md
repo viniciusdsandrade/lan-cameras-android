@@ -18,10 +18,11 @@ do fabricante.
 - Em retrato, o vídeo fica no topo e os controles rolam embaixo; em paisagem, o vídeo ocupa a
   tela inteira com os controles principais por cima.
 - Senha ou endereço trocados: se o app do fabricante (iCSee, XMEye) trocar a senha de uma
-  câmera, ou o roteador mudar o endereço dela, o app percebe quando ela recusa a senha guardada,
-  pega os dados novos com a própria câmera e reabre só as conexões dela. O vídeo não fica
-  tentando de novo com a senha recusada (as câmeras podem bloquear a conta depois de várias
-  tentativas erradas).
+  câmera, ou o roteador mudar o endereço dela, o app percebe quando ela recusa a senha guardada
+  ou para de responder no endereço guardado (que pode ter ficado vazio ou com outro aparelho),
+  procura a câmera pelo número de série, pega os dados novos com ela e reabre só as conexões
+  dela. O vídeo não fica tentando de novo com a senha recusada (as câmeras podem bloquear a
+  conta depois de várias tentativas erradas).
 
 O app só fica conectado às câmeras enquanto está na tela: em segundo plano ele solta as
 sessões (as câmeras aguentam poucas ao mesmo tempo) e as reabre ao voltar.

@@ -26,7 +26,8 @@ interface Decodificador {
 /**
  * Vídeo ao vivo de um fluxo RTSP de uma câmera: conecta, depacota e entrega os quadros ao
  * [Decodificador]; se a conexão cair, tenta de novo com espera crescente (até 10 s). Se a câmera
- * recusar o usuário e a senha, não tenta de novo: avisa por [aoRecusarCredenciais].
+ * recusar o usuário e a senha, não tenta de novo: avisa por [aoRecusarCredenciais]. Se várias
+ * conexões seguidas terminarem sem imagem, avisa por [aoNaoResponder] e segue tentando.
  *
  * Cada instância ocupa UMA sessão RTSP na câmera (elas aguentam poucas); [parar] libera a sessão.
  * O decodificador avisa pelo `aoExibir` cada quadro que virou imagem. Os ouvintes são chamados de
@@ -37,8 +38,17 @@ class FluxoDeVideo(
     private val incluirAudio: Boolean = false,
     /** segundos sem nenhum quadro de vídeo que contam como câmera travada (reconecta) */
     private val limiteSemVideo: Double = 8.0,
+    /**
+     * quantas conexões seguidas sem imagem até [aoNaoResponder], e de quantas em quantas ele se repete
+     * enquanto durar (a 10 s por tentativa, uns 5 min)
+     */
+    falhasAteAvisar: Int = 3,
+    falhasEntreAvisos: Int = 30,
     private val criarDecodificador: (codec: CodecDeVideo, aoExibir: (TamanhoDoVideo) -> Unit) -> Decodificador,
 ) {
+    private val falhasAteAvisar = falhasAteAvisar.coerceAtLeast(1)
+    private val falhasEntreAvisos = falhasEntreAvisos.coerceAtLeast(1)
+
     sealed interface Estado {
         data object Parado : Estado
         data object Conectando : Estado
@@ -66,6 +76,12 @@ class FluxoDeVideo(
     @Volatile var aoReceberAudio: ((PacoteRtp) -> Unit)? = null
     /** A câmera recusou o usuário e a senha da URL. Chega depois do estado de erro, uma vez só. */
     @Volatile var aoRecusarCredenciais: (() -> Unit)? = null
+    /**
+     * Conexões seguidas terminaram sem imagem (recusadas, fechadas, sem resposta): o roteador pode ter
+     * dado outro endereço à câmera, e o dela a outro aparelho. Chega uma vez com `primeiraVez` e se
+     * repete, com `false`, a cada `falhasEntreAvisos` falhas enquanto não chegar imagem. O fluxo segue tentando.
+     */
+    @Volatile var aoNaoResponder: ((primeiraVez: Boolean) -> Unit)? = null
 
     fun iniciar() {
         val e = synchronized(trava) {
@@ -104,6 +120,7 @@ class FluxoDeVideo(
 
     private fun laco(e: Execucao) {
         var espera = 1.0
+        var falhas = 0                                          // conexões seguidas sem imagem
         while (e.ativa) {
             mudar(e, Estado.Conectando)
             val desfecho = executarUmaSessao(e)
@@ -115,7 +132,16 @@ class FluxoDeVideo(
                 while (e.ativa) e.acordar.tryAcquire(60, TimeUnit.SECONDS)
                 break
             }
-            espera = if (desfecho == Desfecho.COM_QUADROS) 1.0 else minOf(espera * 2, 10.0)
+            if (desfecho == Desfecho.COM_QUADROS) {
+                espera = 1.0
+                falhas = 0
+            } else {
+                espera = minOf(espera * 2, 10.0)
+                falhas++
+                if (falhas >= falhasAteAvisar && (falhas - falhasAteAvisar) % falhasEntreAvisos == 0) {
+                    aoNaoResponder?.invoke(falhas == falhasAteAvisar)
+                }
+            }
             e.acordar.tryAcquire((espera * 1000).toLong(), TimeUnit.MILLISECONDS)
         }
     }

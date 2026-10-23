@@ -33,9 +33,9 @@ class ModeloDoApp(
     val escopo: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
     /** No Android o app nasce pausado e o ciclo de vida o retoma quando a tela aparece. */
     comecarPausado: Boolean = false,
-    /** Como pegar de novo os dados de uma câmera que recusou a senha (os testes trocam). Bloqueia. */
+    /** Como pegar de novo os dados de uma câmera que recusou a senha ou parou de responder (os testes trocam). Bloqueia. */
     private val reidentificar: (CameraConfig) -> CameraConfig = { c ->
-        Cadastro.reidentificar(c) { Cadastro.procurarNaRede(4.0) { plataforma.seguraMulticast() } }
+        Cadastro.reidentificar(c) { serie -> Cadastro.procurarNaRede(4.0, serie) { plataforma.seguraMulticast() } }
     },
 ) {
     sealed interface Selecao {
@@ -117,7 +117,7 @@ class ModeloDoApp(
                 val atuais = _sessoesGerais.value.toMutableMap()
                 for (c in _cameras.value) if (c.id !in atuais) {
                     atuais[c.id] = SessaoDeVideo(c, StreamDeVideo.SECUNDARIO).also {
-                        it.aoRecusarCredenciais = { escopo.launch { renovarCredenciais(c) } }
+                        acompanhar(it)
                         it.iniciar()
                     }
                 }
@@ -276,24 +276,61 @@ class ModeloDoApp(
 
     // Senha ou endereço trocados
 
+    /** Por que os dados guardados de uma câmera deixaram de servir. */
+    sealed interface MotivoDaRenovacao {
+        /** Ela recusou o usuário e a senha: o app do fabricante (iCSee, XMEye) pode ter trocado a senha. */
+        data object SenhaRecusada : MotivoDaRenovacao
+
+        /**
+         * Ela não responde no endereço guardado: o roteador pode ter dado outro a ela, e o dela a outro
+         * aparelho. O aviso se repete enquanto ela não voltar; só o primeiro vai para a tela.
+         */
+        data class SemResposta(val primeiraVez: Boolean) : MotivoDaRenovacao
+    }
+
+    /** Acompanha o vídeo de uma câmera: se ela recusar a senha ou parar de responder, renova os dados dela. */
+    fun acompanhar(sessao: SessaoDeVideo) {
+        val c = sessao.camera
+        sessao.aoRecusarCredenciais = { escopo.launch { renovarDados(c, MotivoDaRenovacao.SenhaRecusada) } }
+        sessao.aoNaoResponder = { primeiraVez -> escopo.launch { renovarDados(c, MotivoDaRenovacao.SemResposta(primeiraVez)) } }
+    }
+
     /**
-     * A câmera recusou o usuário e a senha guardados: o app do fabricante pode trocar a senha, e o
-     * roteador, o endereço. Pega os atuais com a própria câmera, guarda e reabre só as sessões dela.
-     * Se ela devolver o mesmo que já estava guardado, não reabre nada: insistir com uma senha recusada
-     * pode fazer a câmera bloquear a conta.
+     * O app do fabricante pode trocar a senha de uma câmera, e o roteador, o endereço: pega os atuais
+     * com a própria câmera (ou procurando na rede pelo número de série), guarda e reabre só as sessões
+     * dela. Se ela devolver o mesmo que já estava guardado, não reabre nada: insistir com uma senha
+     * recusada pode fazer a câmera bloquear a conta.
      */
-    fun renovarCredenciais(camera: CameraConfig) {
+    fun renovarDados(camera: CameraConfig, motivo: MotivoDaRenovacao) {
         if (!renovando.add(camera.id)) return
-        avisar("${camera.nome} não aceitou a senha guardada: pegando a atual com a própria câmera…")
+        val senha = motivo == MotivoDaRenovacao.SenhaRecusada
+        // Quem segue sem responder já foi avisado: daí em diante só o que mudar aparece na tela.
+        val naTela = motivo != MotivoDaRenovacao.SemResposta(primeiraVez = false)
+        fun informar(texto: String, tipo: Aviso.Tipo = Aviso.Tipo.INFO) {
+            if (naTela) avisar(texto, tipo) else Depuracao.registrar { texto }
+        }
+        informar(
+            if (senha) "${camera.nome} não aceitou a senha guardada: pegando a atual com a própria câmera…"
+            else "${camera.nome} não responde no endereço guardado: procurando na rede…",
+        )
         escopo.launch {
             val r = runCatching { withContext(Dispatchers.IO) { reidentificar(camera) } }
             renovando.remove(camera.id)
             val nova = r.getOrElse {
-                avisar("${camera.nome} não aceitou a senha guardada e não consegui pegar a atual: ${Redact.texto(it.toString())}", Aviso.Tipo.ERRO)
+                val porque = Redact.texto(it.toString())
+                informar(
+                    if (senha) "${camera.nome} não aceitou a senha guardada e não consegui pegar a atual: $porque"
+                    else "${camera.nome} não responde e não consegui achá-la: $porque",
+                    Aviso.Tipo.ERRO,
+                )
                 return@launch
             }
             if (nova.host == camera.host && nova.usuario == camera.usuario && nova.hash == camera.hash) {
-                avisar("${camera.nome} recusou a senha que ela mesma informa. Tente de novo daqui a alguns minutos.", Aviso.Tipo.ERRO)
+                informar(
+                    if (senha) "${camera.nome} recusou a senha que ela mesma informa. Tente de novo daqui a alguns minutos."
+                    else "${camera.nome} responde no endereço guardado, mas não manda imagem. Continuo tentando.",
+                    Aviso.Tipo.ERRO,
+                )
                 return@launch
             }
             try {

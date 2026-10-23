@@ -7,6 +7,7 @@ import java.io.OutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 /** O endereço de loopback em texto, para montar URLs nos testes. */
@@ -99,5 +100,52 @@ class ServidorHttpFalso(private val manipulador: (Requisicao) -> Resposta) : Aut
         saida.write(cab.append("\r\n").toString().toByteArray())
         saida.write(carga.toByteArray())
         saida.flush()
+    }
+}
+
+/**
+ * Outro aparelho no endereço que era da câmera (o roteador o deu a ele): tem RTSP, mas responde 405
+ * ao OPTIONS e fecha a conexão no pedido seguinte, sem nunca mandar vídeo.
+ */
+class AparelhoQueNaoEhACamera : AutoCloseable {
+    private val escuta = abrirEscutaLocal()
+    val url: String get() = "rtsp://$loopback:${escuta.localPort}/fluxo"
+    private val _conexoes = AtomicInteger()
+    val conexoes: Int get() = _conexoes.get()
+
+    init {
+        thread(name = "aparelho-falso", isDaemon = true) {
+            while (true) {
+                val c = try { escuta.accept() } catch (_: IOException) { return@thread }
+                _conexoes.incrementAndGet()
+                try { c.use { atender(it) } } catch (_: IOException) {}
+            }
+        }
+    }
+
+    override fun close() = escuta.close()
+
+    private fun atender(c: Socket) {
+        val entrada = c.getInputStream()
+        val saida = c.getOutputStream()
+        val buf = ByteArrayOutputStream()
+        val tmp = ByteArray(4096)
+        while (true) {
+            val b = buf.toByteArray()
+            val i = (0..b.size - 4).firstOrNull { b[it].toInt() == 13 && b[it + 1].toInt() == 10 && b[it + 2].toInt() == 13 && b[it + 3].toInt() == 10 }
+            if (i != null) {
+                val pedido = String(b, 0, i)
+                buf.reset()
+                buf.write(b, i + 4, b.size - i - 4)
+                if (!pedido.startsWith("OPTIONS")) return                 // DESCRIBE e o resto: fecha
+                val cseq = pedido.split("\r\n").firstOrNull { it.lowercase().startsWith("cseq:") }?.substring(5)?.trim() ?: "0"
+                saida.write("RTSP/1.0 405 Method Not Allowed\r\nCSeq: $cseq\r\n\r\n".toByteArray())
+                saida.flush()
+                continue
+            }
+            val n = entrada.read(tmp)
+            if (n <= 0) return
+            buf.write(tmp, 0, n)
+        }
     }
 }

@@ -27,6 +27,7 @@ import org.junit.Test
 import java.io.File
 import java.net.InetAddress
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -268,6 +269,80 @@ class ModeloDoAppTest {
         s.aoRecusarCredenciais!!.invoke()                         // a câmera pode recusar de novo antes de a primeira acabar
         assertTrue(esperar { m.aviso.value?.tipo == Aviso.Tipo.OK })
         assertEquals(1, chamadas.get())
+    }
+
+    // O [CountDownLatch] segura a busca para conferir o que a tela mostra antes de ela terminar.
+
+    @Test
+    fun cameraQueNaoRespondeEApareceEmOutroEnderecoReabreSoEla() {
+        // o roteador deu outro endereço à câmera, e o dela a outro aparelho
+        val liberar = CountDownLatch(1)
+        val m = modelo(reidentificar = { liberar.await(); it.copy(host = "192.0.2.40") })
+        val antes = m.sessoesGerais.value
+        val primeira = antes.getValue("SERIE-FALSA-1")
+        primeira.aoNaoResponder!!.invoke(true)                    // o que o fluxo faz depois de algumas conexões sem imagem
+        assertEquals("Câmera 1 não responde no endereço guardado: procurando na rede…", m.aviso.value?.texto)
+        liberar.countDown()
+        assertTrue(esperar { m.aviso.value?.tipo == Aviso.Tipo.OK })
+        assertEquals("Câmera 1 tinha mudado de endereço na rede: já atualizei.", m.aviso.value?.texto)
+        assertEquals("o endereço novo fica guardado", "192.0.2.40", armazenamento.carregar().first { it.id == "SERIE-FALSA-1" }.host)
+        val reaberta = m.sessoesGerais.value.getValue("SERIE-FALSA-1")
+        assertNotSame("a sessão da câmera é reaberta no endereço novo", primeira, reaberta)
+        assertEquals("192.0.2.40", reaberta.camera.host)
+        assertSame("as outras câmeras seguem como estavam", antes["SERIE-FALSA-2"], m.sessoesGerais.value["SERIE-FALSA-2"])
+        assertSame(antes["SERIE-FALSA-3"], m.sessoesGerais.value["SERIE-FALSA-3"])
+    }
+
+    @Test
+    fun naTelaDaCameraACameraQueNaoRespondeTambemEhProcurada() {
+        val liberar = CountDownLatch(1)
+        val m = modelo(reidentificar = { liberar.await(); it.copy(host = "192.0.2.50") })
+        m.selecionar(ModeloDoApp.Selecao.Camera("SERIE-FALSA-3"))
+        val antiga = m.sessaoDaCamera.value!!
+        antiga.video.aoNaoResponder!!.invoke(false)               // uma busca de antes não achou; esta acha
+        assertNull("as buscas que se repetem não aparecem na tela", m.aviso.value)
+        liberar.countDown()
+        assertTrue(esperar { m.aviso.value?.tipo == Aviso.Tipo.OK })
+        assertEquals("o que achou sempre aparece", "Câmera 3 tinha mudado de endereço na rede: já atualizei.", m.aviso.value?.texto)
+        val nova = m.sessaoDaCamera.value
+        assertNotNull(nova)
+        assertNotSame(antiga, nova)
+        assertEquals("192.0.2.50", nova!!.camera.host)
+        assertEquals("continua na mesma tela", ModeloDoApp.Selecao.Camera("SERIE-FALSA-3"), m.selecao.value)
+    }
+
+    @Test
+    fun cameraQueNaoRespondeMasEstaNoMesmoEnderecoNaoReabreNada() {
+        val m = modelo(reidentificar = { it })                    // ela está lá, com a mesma senha
+        val antiga = m.sessoesGerais.value.getValue("SERIE-FALSA-2")
+        antiga.aoNaoResponder!!.invoke(true)
+        assertTrue(esperar { m.aviso.value?.tipo == Aviso.Tipo.ERRO })
+        assertEquals("Câmera 2 responde no endereço guardado, mas não manda imagem. Continuo tentando.", m.aviso.value?.texto)
+        assertSame("o fluxo dela segue tentando sozinho", antiga, m.sessoesGerais.value["SERIE-FALSA-2"])
+    }
+
+    @Test
+    fun cameraSumidaSoAvisaNaPrimeiraVezMasSegueProcurando() {
+        val chamadas = AtomicInteger()
+        val m = modelo(reidentificar = {
+            chamadas.incrementAndGet()
+            throw Cadastro.Falha.CameraSumiu()
+        })
+        val s = m.sessoesGerais.value.getValue("SERIE-FALSA-1")
+        s.aoNaoResponder!!.invoke(true)
+        assertTrue(esperar { m.aviso.value?.tipo == Aviso.Tipo.ERRO })
+        assertEquals(
+            "Câmera 1 não responde e não consegui achá-la: ela não está mais no endereço guardado e não apareceu na rede",
+            m.aviso.value?.texto,
+        )
+
+        m.fecharAviso()
+        s.aoNaoResponder!!.invoke(false)                          // o fluxo avisa de novo enquanto ela não volta
+        assertTrue("deveria procurar de novo", esperar { chamadas.get() == 2 })
+        Thread.sleep(200)                                         // a resposta da busca termina de chegar
+        assertNull("quem segue sumida não enche a tela de avisos", m.aviso.value)
+        assertEquals(List(3) { InetAddress.getLoopbackAddress().hostAddress }, armazenamento.carregar().map { it.host })
+        assertSame(s, m.sessoesGerais.value["SERIE-FALSA-1"])
     }
 
     @Test

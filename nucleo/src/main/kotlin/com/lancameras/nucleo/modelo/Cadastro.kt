@@ -33,16 +33,16 @@ object Cadastro {
      * Pega de novo, da própria câmera, o endereço e as credenciais de uma câmera já guardada: o app do
      * fabricante (iCSee, XMEye) pode trocar a senha dela, e o roteador, o endereço. Pergunta primeiro no
      * endereço guardado; se lá não estiver a mesma câmera (o número de série não muda), procura na rede
-     * com [procurar]. Nome, ordem e lentes ficam como estavam.
+     * por esse número com [procurar], que o recebe. Nome, ordem e lentes ficam como estavam.
      */
-    fun reidentificar(camera: CameraConfig, porta: Int = 8899, procurar: () -> Resultado = { procurarNaRede() }): CameraConfig {
+    fun reidentificar(camera: CameraConfig, porta: Int = 8899, procurar: (serie: String) -> Resultado = { procurarNaRede(serie = it) }): CameraConfig {
         val cliente = ClienteOnvif(camera.host, porta)
         val info = try { cliente.informacoes() } catch (_: Exception) { null }
         if (info?.serie == camera.id) {
             val cred = cliente.credenciais()                 // é ela: se não entregar a senha, procurar não adianta
             return camera.copy(usuario = cred.usuario, hash = cred.hash)
         }
-        val achada = procurar().cameras.firstOrNull { it.id == camera.id } ?: throw Falha.CameraSumiu()
+        val achada = procurar(camera.id).cameras.firstOrNull { it.id == camera.id } ?: throw Falha.CameraSumiu()
         return camera.copy(host = achada.host, usuario = achada.usuario, hash = achada.hash)
     }
 
@@ -64,10 +64,13 @@ object Cadastro {
         return identificarTodos(r.abertos, porta)
     }
 
-    /** WS-Discovery e, se nada responder (roteador que filtra multicast), a varredura. */
-    fun procurarNaRede(duracao: Double = 4.0, seguraMulticast: () -> AutoCloseable = { AutoCloseable {} }): Resultado {
+    /**
+     * WS-Discovery e, se nada responder (roteador que filtra multicast), a varredura. Com [serie], a
+     * varredura também roda se essa câmera não estiver entre as que responderam (o UDP do WS-Discovery se perde).
+     */
+    fun procurarNaRede(duracao: Double = 4.0, serie: String? = null, seguraMulticast: () -> AutoCloseable = { AutoCloseable {} }): Resultado {
         val porMulticast = try { procurar(duracao, seguraMulticast) } catch (_: Exception) { null }
-        if (porMulticast != null && porMulticast.cameras.isNotEmpty()) return porMulticast
+        if (porMulticast != null && porMulticast.cameras.any { serie == null || it.id == serie }) return porMulticast
         return procurarPorVarredura()
     }
 

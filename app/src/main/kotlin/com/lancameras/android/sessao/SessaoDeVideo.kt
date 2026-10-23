@@ -28,6 +28,13 @@ class SessaoDeVideo(val camera: CameraConfig, val stream: StreamDeVideo, comAudi
      */
     @Volatile var aoRecusarCredenciais: (() -> Unit)? = null
 
+    /**
+     * A câmera não responde no endereço guardado (várias conexões seguidas sem imagem) e o fluxo segue
+     * tentando: quem abriu a sessão pode procurá-la na rede. `primeiraVez` é falso nos avisos que se
+     * repetem enquanto ela não voltar. Chamado de uma thread interna.
+     */
+    @Volatile var aoNaoResponder: ((primeiraVez: Boolean) -> Unit)? = null
+
     private val fluxo = FluxoDeVideo(camera.urlDeVideo(stream), comAudio) { _, aoExibir -> distribuidor.novaSessao(aoExibir) }
 
     init {
@@ -37,6 +44,7 @@ class SessaoDeVideo(val camera: CameraConfig, val stream: StreamDeVideo, comAudi
             _estado.value = novo
         }
         fluxo.aoRecusarCredenciais = { aoRecusarCredenciais?.invoke() }
+        fluxo.aoNaoResponder = { aoNaoResponder?.invoke(it) }
     }
 
     fun iniciar() = fluxo.iniciar()

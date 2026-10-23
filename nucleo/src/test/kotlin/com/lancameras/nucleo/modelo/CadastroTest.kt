@@ -16,8 +16,9 @@ private fun envelopeSoap(corpo: String) =
         "xmlns:tds=\"d\" xmlns:trt=\"m\" xmlns:tt=\"t\"><s:Body>$corpo</s:Body></s:Envelope>"
 
 /**
- * Uma câmera já guardada que passou a recusar a senha: os dados atuais vêm da própria câmera, no
- * endereço guardado ou, se lá estiver outro aparelho, procurando na rede pelo número de série.
+ * Uma câmera já guardada que passou a recusar a senha ou a não responder: os dados atuais vêm da
+ * própria câmera, no endereço guardado ou, se lá estiver outro aparelho (ou nenhum), procurando na
+ * rede pelo número de série.
  */
 class CadastroTest {
     /**
@@ -64,7 +65,8 @@ class CadastroTest {
     fun outroAparelhoNoEnderecoGuardadoFazProcurarPeloNumeroDeSerie() {
         // o roteador deu o endereço desta câmera a outra: lá responde outro número de série
         cameraFalsa("SERIE-FALSA-0001", "senha-da-outra").use { s ->
-            val nova = Cadastro.reidentificar(guardada, s.porta) {
+            val nova = Cadastro.reidentificar(guardada, s.porta) { serie ->
+                assertEquals("procura pelo número de série da câmera guardada", "SERIE-FALSA-0003", serie)
                 Cadastro.Resultado().apply {
                     cameras += CameraConfig(id = "SERIE-FALSA-0001", nome = "Câmera 1", host = loopback, usuario = "fulano", hash = "senha-da-outra")
                     cameras += CameraConfig(id = "SERIE-FALSA-0003", nome = "Câmera 2", host = "192.0.2.30", usuario = "fulano", hash = "senha-nova")
@@ -74,6 +76,21 @@ class CadastroTest {
             assertEquals("senha-nova", nova.hash)
             assertEquals("Porta de entrada", nova.nome)
         }
+    }
+
+    @Test
+    fun enderecoGuardadoSemCameraFazProcurarPeloNumeroDeSerie() {
+        // o roteador deu outro endereço à câmera, e no dela ninguém atende (ou um aparelho recusa a conexão)
+        val livre = abrirEscutaLocal().use { it.localPort }
+        val nova = Cadastro.reidentificar(guardada, livre) { serie ->
+            Cadastro.Resultado().apply {
+                cameras += CameraConfig(id = serie, nome = "Câmera 1", host = "192.0.2.31", usuario = "fulano", hash = "senha-velha")
+            }
+        }
+        assertEquals("192.0.2.31", nova.host)
+        assertEquals("só o endereço mudou", "senha-velha", nova.hash)
+        assertEquals("nome, ordem e lentes ficam como estavam", "Porta de entrada", nova.nome)
+        assertEquals(2, nova.ordem)
     }
 
     @Test
